@@ -27,6 +27,11 @@ static Ihandle *timeout = NULL;
 // ADD THIS: Track filtering state to prevent double F5 presses
 static volatile short isFilteringActive = 0;
 
+// Custom keybind settings
+static short toggleKeyCode = 116; // Default F5 (VK_F5)
+static short toggleKeyIsMouseButton = 0; // 0 = keyboard, 1 = mouse
+static char toggleKeyName[32] = "F5"; // Display name
+
 void showStatus(const char *line);
 static int KEYPRESS_CB(Ihandle *ih, int c, int press);
 static int uiOnDialogShow(Ihandle *ih, int state);
@@ -51,6 +56,44 @@ filterRecord filters[CONFIG_MAX_RECORDS] = {0};
 char configBuf[CONFIG_BUF_SIZE + 2]; // add some padding to write \n
 BOOL parameterized =
     0; // parameterized flag, means reading args from command line
+
+// Parse keybind from config
+void parseToggleKey(const char *keyStr) {
+  if (!keyStr || !*keyStr) return;
+  
+  // Check for mouse button (MB1-MB5)
+  if (strncmp(keyStr, "MB", 2) == 0 && keyStr[2] >= '1' && keyStr[2] <= '5') {
+    toggleKeyIsMouseButton = 1;
+    toggleKeyCode = keyStr[2] - '0'; // 1-5
+    strncpy(toggleKeyName, keyStr, sizeof(toggleKeyName) - 1);
+    LOG("Parsed mouse button keybind: %s (code: %d)", toggleKeyName, toggleKeyCode);
+    return;
+  }
+  
+  // Check for F-keys (F1-F12)
+  if (keyStr[0] == 'F' && keyStr[1] >= '1' && keyStr[1] <= '9') {
+    int fNum = atoi(keyStr + 1);
+    if (fNum >= 1 && fNum <= 12) {
+      toggleKeyIsMouseButton = 0;
+      toggleKeyCode = 111 + fNum; // VK_F1 = 112, so F1-F12 = 112-123
+      strncpy(toggleKeyName, keyStr, sizeof(toggleKeyName) - 1);
+      LOG("Parsed F-key keybind: %s (VK code: %d)", toggleKeyName, toggleKeyCode);
+      return;
+    }
+  }
+  
+  // Try parsing as decimal VK code
+  int vkCode = atoi(keyStr);
+  if (vkCode > 0 && vkCode < 256) {
+    toggleKeyIsMouseButton = 0;
+    toggleKeyCode = (short)vkCode;
+    sprintf(toggleKeyName, "VK_%d", vkCode);
+    LOG("Parsed VK code keybind: %d", vkCode);
+    return;
+  }
+  
+  LOG("Invalid keybind format: %s, using default F5", keyStr);
+}
 
 // loading up filters and fill in
 void loadConfig() {
@@ -100,6 +143,26 @@ void loadConfig() {
       if (!current)
         break;
       *current = '\0';
+      
+      // Check if this is the toggle-key setting
+      if (strcmp(last, "toggle-key") == 0) {
+        current += 1;
+        while (isspace(*current)) {
+          ++current;
+        }
+        last = current;
+        current = strchr(last, '\n');
+        if (current) {
+          *current = '\0';
+          if (*(current - 1) == '\r')
+            *(current - 1) = 0;
+          parseToggleKey(last);
+          last = current = current + 1;
+        }
+        continue;
+      }
+      
+      // Regular filter entry
       filters[filtersSize].filterName = last;
       current += 1;
       while (isspace(*current)) {
@@ -131,8 +194,13 @@ void loadConfig() {
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
   char pressedKey;
-  // Declare a pointer to the KBDLLHOOKSTRUCTdsad
   KBDLLHOOKSTRUCT *pKeyBoard = (KBDLLHOOKSTRUCT *)lParam;
+  
+  // Only process keyboard events if not using mouse button
+  if (toggleKeyIsMouseButton) {
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+  }
+  
   switch (wParam) {
   case WM_KEYUP: // When the key has been pressed and released
   {
@@ -144,26 +212,59 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     break;
   }
 
-  // FIXED: Added state checking to prevent double F5 presses
-  if (pressedKey == 116) // F5 key
-  {
-    // Only start if not already running
-    if (!isFilteringActive) {
-      uiStartCb(NULL);
-    }
-  } else if (pressedKey == 117) // F6 key
-  {
-    // Only stop if currently running
+  // Toggle behavior with custom key
+  if (pressedKey == toggleKeyCode) {
     if (isFilteringActive) {
       uiStopCb(NULL);
+    } else {
+      uiStartCb(NULL);
     }
+    LOG("Toggle key pressed: %s (code: %d)", toggleKeyName, pressedKey);
   }
-  LOG("Character: %d", pressedKey);
 
-  // according to winapi all functions which implement a hook must return by
-  // calling next hook
   return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
+
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+  // Only process mouse events if using mouse button
+  if (!toggleKeyIsMouseButton) {
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+  }
+  
+  // Check for mouse button press
+  BOOL buttonPressed = FALSE;
+  switch (wParam) {
+    case WM_LBUTTONUP:
+      if (toggleKeyCode == 1) buttonPressed = TRUE;
+      break;
+    case WM_RBUTTONUP:
+      if (toggleKeyCode == 2) buttonPressed = TRUE;
+      break;
+    case WM_MBUTTONUP:
+      if (toggleKeyCode == 3) buttonPressed = TRUE;
+      break;
+    case WM_XBUTTONUP: {
+      MSLLHOOKSTRUCT *pMouse = (MSLLHOOKSTRUCT *)lParam;
+      int xButton = HIWORD(pMouse->mouseData);
+      if (xButton == XBUTTON1 && toggleKeyCode == 4) buttonPressed = TRUE;
+      if (xButton == XBUTTON2 && toggleKeyCode == 5) buttonPressed = TRUE;
+      break;
+    }
+  }
+  
+  if (buttonPressed) {
+    if (isFilteringActive) {
+      uiStopCb(NULL);
+    } else {
+      uiStartCb(NULL);
+    }
+    LOG("Toggle mouse button pressed: %s", toggleKeyName);
+  }
+  
+  return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+// init, startup, cleanup and other functions remain unchanged
 
 void init(int argc, char *argv[]) {
   UINT ix;
@@ -177,13 +278,15 @@ void init(int argc, char *argv[]) {
   // iup inits
   IupOpen(&argc, &argv);
 
-  // this is so easy to get wrong so it's pretty worth noting in the program
-  statusLabel = IupLabel("NOTICE: When capturing localhost (loopback) packets, "
-                         "you CAN'T include inbound criteria.\n"
-                         "Filters like 'udp' need to be 'udp and outbound' to "
-                         "work. See readme for more info.");
+  // Update status label to show keybind info
+  char statusText[512];
+  sprintf(statusText, 
+    "NOTICE: When capturing localhost (loopback) packets, you CAN'T include inbound criteria.\n"
+    "Filters like 'udp' need to be 'udp and outbound' to work. Toggle key: %s",
+    toggleKeyName);
+  statusLabel = IupLabel(statusText);
   IupSetAttribute(statusLabel, "EXPAND", "HORIZONTAL");
-  IupSetAttribute(statusLabel, "PADDING", "8x8");
+  IupSetAttribute(statusLabel, "PADDING", "8x");
 
   topFrame = IupFrame(
       topVbox =
@@ -289,11 +392,14 @@ void init(int argc, char *argv[]) {
 }
 
 void startup() {
-  HHOOK hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc,
+  HHOOK keyHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc,
+                                GetModuleHandle(NULL), 0);
+  HHOOK mouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc,
                                 GetModuleHandle(NULL), 0);
   IupShowXY(dialog, IUP_CENTER, IUP_CENTER);
   IupMainLoop();
-  UnhookWindowsHookEx(hook);
+  UnhookWindowsHookEx(keyHook);
+  UnhookWindowsHookEx(mouseHook);
 }
 
 void cleanup() {

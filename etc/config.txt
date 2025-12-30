@@ -1,5 +1,18 @@
-# filters presets. clumsy will capture packets base filter criteria
-# each entry must contains single line
+# ============================================================
+# KEYBIND CONFIGURATION
+# ============================================================
+# Set your toggle key here. Supported formats:
+# - F-keys: F1, F2, F3, ..., F12
+# - Mouse buttons: MB1 (left), MB2 (right), MB3 (middle), MB4, MB5
+# - VK codes: Any valid Virtual Key code (e.g., 116 for F5)
+# Default: F5 (toggle start/stop with same key)
+toggle-key: F5
+
+# ============================================================
+# FILTER PRESETS
+# ============================================================
+# clumsy will capture packets based on filter criteria
+# each entry must contain single line
 # filter-name:filter-text
 # see <https://github.com/basil00/Divert/wiki/WinDivert-Documentation#7-filter-language> for details
 
