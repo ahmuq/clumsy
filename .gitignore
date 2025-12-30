@@ -3,6 +3,7 @@ build/
 tmp/
 zig-cache/
 zig-out/
+.vs/
 etc/clumsy.aps
 *.swp
 obj_vs

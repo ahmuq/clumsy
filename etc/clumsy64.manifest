@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0" xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
 <!-- the funky thing is that the version MUST be x.x.x.x, see msdn for info -->
 <assemblyIdentity
     version="0.3.0.0"
@@ -7,7 +7,7 @@
     name="clumsy"
     type="win32"
 />
-<description>clumsy</description>
+<description>clumsy - Network condition simulator that requires administrator privileges</description>
 <dependency>
     <dependentAssembly>
         <assemblyIdentity
@@ -30,7 +30,7 @@
 <security>
   <requestedPrivileges>
     <requestedExecutionLevel
-        level="asInvoker"
+        level="requireAdministrator"
         uiAccess="false"
             />
   </requestedPrivileges>
