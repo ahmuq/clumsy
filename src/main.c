@@ -26,8 +26,10 @@ static Ihandle *timer;
 static Ihandle *timeout = NULL;
 
 static Ihandle* keybindText, * keybindButton, * keybindLabel;
+static Ihandle* keybindPressButton;
 // ADD THIS: Track filtering state to prevent double F5 presses
 static volatile short isFilteringActive = 0;
+static volatile short isCapturingKeybind = 0;
 
 // Custom keybind settings
 static short toggleKeyCode = 116; // Default F5 (VK_F5)
@@ -45,8 +47,10 @@ static int uiListSelectCb(Ihandle *ih, char *text, int item, int state);
 static int uiFilterTextCb(Ihandle *ih);
 static void uiSetupModule(Module *module, Ihandle *parent);
 static int uiSetKeybindCb(Ihandle* ih);
+static int uiPressToBind(Ihandle* ih);
 static void updateKeybindLabel();
 static void saveConfigFile();
+static void stopCapturingKeybind();
 
 
 // serializing config files using a stupid custom format
@@ -199,75 +203,153 @@ void loadConfig() {
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-  char pressedKey;
-  KBDLLHOOKSTRUCT *pKeyBoard = (KBDLLHOOKSTRUCT *)lParam;
-  
-  // Only process keyboard events if not using mouse button
-  if (toggleKeyIsMouseButton) {
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
-  }
-  
-  switch (wParam) {
-  case WM_KEYUP: // When the key has been pressed and released
-  {
-    // get the key code
-    pressedKey = (char)pKeyBoard->vkCode;
-  } break;
-  default:
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
-    break;
-  }
+    char pressedKey;
+    KBDLLHOOKSTRUCT* pKeyBoard = (KBDLLHOOKSTRUCT*)lParam;
 
-  // Toggle behavior with custom key
-  if (pressedKey == toggleKeyCode) {
-    if (isFilteringActive) {
-      uiStopCb(NULL);
-    } else {
-      uiStartCb(NULL);
+    // If we're in capture mode, capture the key
+    if (isCapturingKeybind && wParam == WM_KEYDOWN) {
+        pressedKey = (char)pKeyBoard->vkCode;
+
+        // Skip modifier keys and Escape
+        if (pressedKey != VK_SHIFT && pressedKey != VK_CONTROL &&
+            pressedKey != VK_MENU && pressedKey != VK_LWIN && pressedKey != VK_RWIN) {
+
+            if (pressedKey == VK_ESCAPE) {
+                // Cancel capture
+                stopCapturingKeybind();
+                showStatus("Keybind capture cancelled");
+            }
+            else {
+                // Capture the key
+                toggleKeyIsMouseButton = 0;
+                toggleKeyCode = (short)pressedKey;
+
+                // Determine key name
+                if (pressedKey >= VK_F1 && pressedKey <= VK_F12) {
+                    sprintf(toggleKeyName, "F%d", pressedKey - VK_F1 + 1);
+                }
+                else {
+                    sprintf(toggleKeyName, "VK_%d", pressedKey);
+                }
+
+                stopCapturingKeybind();
+                updateKeybindLabel();
+                IupSetAttribute(keybindText, "VALUE", toggleKeyName);
+                saveConfigFile();
+
+                char msg[128];
+                sprintf(msg, "Keybind changed to: %s", toggleKeyName);
+                showStatus(msg);
+                LOG("Captured keybind: %s (code: %d)", toggleKeyName, pressedKey);
+            }
+
+            return 1; // Block the key from propagating
+        }
     }
-    LOG("Toggle key pressed: %s (code: %d)", toggleKeyName, pressedKey);
-  }
 
-  return CallNextHookEx(NULL, nCode, wParam, lParam);
+    // Only process keyboard events if not using mouse button
+    if (toggleKeyIsMouseButton || isCapturingKeybind) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    switch (wParam) {
+    case WM_KEYUP: // When the key has been pressed and released
+    {
+        // get the key code
+        pressedKey = (char)pKeyBoard->vkCode;
+    } break;
+    default:
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+        break;
+    }
+
+    // Toggle behavior with custom key
+    if (pressedKey == toggleKeyCode) {
+        if (isFilteringActive) {
+            uiStopCb(NULL);
+        }
+        else {
+            uiStartCb(NULL);
+        }
+        LOG("Toggle key pressed: %s (code: %d)", toggleKeyName, pressedKey);
+    }
+
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
-  // Only process mouse events if using mouse button
-  if (!toggleKeyIsMouseButton) {
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
-  }
-  
-  // Check for mouse button press
-  BOOL buttonPressed = FALSE;
-  switch (wParam) {
+    // If we're in capture mode, capture mouse button
+    if (isCapturingKeybind) {
+        int mouseButton = 0;
+
+        switch (wParam) {
+        case WM_LBUTTONDOWN: mouseButton = 1; break;
+        case WM_RBUTTONDOWN: mouseButton = 2; break;
+        case WM_MBUTTONDOWN: mouseButton = 3; break;
+        case WM_XBUTTONDOWN: {
+            MSLLHOOKSTRUCT* pMouse = (MSLLHOOKSTRUCT*)lParam;
+            int xButton = HIWORD(pMouse->mouseData);
+            mouseButton = (xButton == XBUTTON1) ? 4 : 5;
+            break;
+        }
+        }
+
+        if (mouseButton > 0) {
+            toggleKeyIsMouseButton = 1;
+            toggleKeyCode = (short)mouseButton;
+            sprintf(toggleKeyName, "MB%d", mouseButton);
+
+            stopCapturingKeybind();
+            updateKeybindLabel();
+            IupSetAttribute(keybindText, "VALUE", toggleKeyName);
+            saveConfigFile();
+
+            char msg[128];
+            sprintf(msg, "Keybind changed to: %s", toggleKeyName);
+            showStatus(msg);
+            LOG("Captured mouse keybind: %s", toggleKeyName);
+
+            return 1; // Block the mouse button
+        }
+    }
+
+    // Only process mouse events if using mouse button
+    if (!toggleKeyIsMouseButton || isCapturingKeybind) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    // Check for mouse button press
+    BOOL buttonPressed = FALSE;
+    switch (wParam) {
     case WM_LBUTTONUP:
-      if (toggleKeyCode == 1) buttonPressed = TRUE;
-      break;
+        if (toggleKeyCode == 1) buttonPressed = TRUE;
+        break;
     case WM_RBUTTONUP:
-      if (toggleKeyCode == 2) buttonPressed = TRUE;
-      break;
+        if (toggleKeyCode == 2) buttonPressed = TRUE;
+        break;
     case WM_MBUTTONUP:
-      if (toggleKeyCode == 3) buttonPressed = TRUE;
-      break;
+        if (toggleKeyCode == 3) buttonPressed = TRUE;
+        break;
     case WM_XBUTTONUP: {
-      MSLLHOOKSTRUCT *pMouse = (MSLLHOOKSTRUCT *)lParam;
-      int xButton = HIWORD(pMouse->mouseData);
-      if (xButton == XBUTTON1 && toggleKeyCode == 4) buttonPressed = TRUE;
-      if (xButton == XBUTTON2 && toggleKeyCode == 5) buttonPressed = TRUE;
-      break;
+        MSLLHOOKSTRUCT* pMouse = (MSLLHOOKSTRUCT*)lParam;
+        int xButton = HIWORD(pMouse->mouseData);
+        if (xButton == XBUTTON1 && toggleKeyCode == 4) buttonPressed = TRUE;
+        if (xButton == XBUTTON2 && toggleKeyCode == 5) buttonPressed = TRUE;
+        break;
     }
-  }
-  
-  if (buttonPressed) {
-    if (isFilteringActive) {
-      uiStopCb(NULL);
-    } else {
-      uiStartCb(NULL);
     }
-    LOG("Toggle mouse button pressed: %s", toggleKeyName);
-  }
-  
-  return CallNextHookEx(NULL, nCode, wParam, lParam);
+
+    if (buttonPressed) {
+        if (isFilteringActive) {
+            uiStopCb(NULL);
+        }
+        else {
+            uiStartCb(NULL);
+        }
+        LOG("Toggle mouse button pressed: %s", toggleKeyName);
+    }
+
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
 // Update keybind label in UI
@@ -370,6 +452,38 @@ static int uiSetKeybindCb(Ihandle* ih) {
     return IUP_DEFAULT;
 }
 
+// Stop capturing keybind and restore UI
+static void stopCapturingKeybind() {
+    isCapturingKeybind = 0;
+    IupSetAttribute(keybindPressButton, "TITLE", "Press to Bind");
+    IupSetAttribute(keybindPressButton, "BGCOLOR", NULL);
+    IupSetAttribute(keybindText, "ACTIVE", "YES");
+    IupSetAttribute(keybindButton, "ACTIVE", "YES");
+}
+
+// Callback for Press to Bind button
+static int uiPressToBind(Ihandle* ih) {
+    UNREFERENCED_PARAMETER(ih);
+
+    if (isCapturingKeybind) {
+        // Already capturing, cancel it
+        stopCapturingKeybind();
+        showStatus("Keybind capture cancelled");
+    }
+    else {
+        // Start capturing
+        isCapturingKeybind = 1;
+        IupSetAttribute(keybindPressButton, "TITLE", "Press Any Key...");
+        IupSetAttribute(keybindPressButton, "BGCOLOR", "255 200 0");
+        IupSetAttribute(keybindText, "ACTIVE", "NO");
+        IupSetAttribute(keybindButton, "ACTIVE", "NO");
+        showStatus("Press any key or mouse button (ESC to cancel)");
+        LOG("Started keybind capture mode");
+    }
+
+    return IUP_DEFAULT;
+}
+
 // init, startup, cleanup and other functions remain unchanged
 
 void init(int argc, char* argv[]) {
@@ -406,11 +520,16 @@ void init(int argc, char* argv[]) {
     IupSetAttribute(keybindButton, "PADDING", "4x");
     IupSetCallback(keybindButton, "ACTION", (Icallback)uiSetKeybindCb);
 
+    keybindPressButton = IupButton("Press to Bind", NULL);
+    IupSetAttribute(keybindPressButton, "PADDING", "4x");
+    IupSetCallback(keybindPressButton, "ACTION", (Icallback)uiPressToBind);
+
     keybindHbox = IupHbox(
         keybindLabel,
         IupLabel("  Change: "),
         keybindText,
         keybindButton,
+        keybindPressButton,
         NULL
     );
     IupSetAttribute(keybindHbox, "ALIGNMENT", "ACENTER");
