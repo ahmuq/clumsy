@@ -24,6 +24,8 @@ Ihandle *filterSelectList;
 static Ihandle *stateIcon;
 static Ihandle *timer;
 static Ihandle *timeout = NULL;
+
+static Ihandle* keybindText, * keybindButton, * keybindLabel;
 // ADD THIS: Track filtering state to prevent double F5 presses
 static volatile short isFilteringActive = 0;
 
@@ -42,6 +44,10 @@ static int uiTimeoutCb(Ihandle *ih);
 static int uiListSelectCb(Ihandle *ih, char *text, int item, int state);
 static int uiFilterTextCb(Ihandle *ih);
 static void uiSetupModule(Module *module, Ihandle *parent);
+static int uiSetKeybindCb(Ihandle* ih);
+static void updateKeybindLabel();
+static void saveConfigFile();
+
 
 // serializing config files using a stupid custom format
 #define CONFIG_FILE "config.txt"
@@ -264,131 +270,254 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
   return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
+// Update keybind label in UI
+static void updateKeybindLabel() {
+    char labelText[64];
+    sprintf(labelText, "Toggle Key: %s", toggleKeyName);
+    IupSetAttribute(keybindLabel, "TITLE", labelText);
+}
+
+// Save config file with new keybind
+static void saveConfigFile() {
+    char path[MSG_BUFSIZE];
+    char* p;
+    FILE* f;
+
+    GetModuleFileName(NULL, path, MSG_BUFSIZE);
+    p = strrchr(path, '\\');
+    if (p == NULL) p = strrchr(path, '/');
+    strcpy(p + 1, CONFIG_FILE);
+
+    f = fopen(path, "w");
+    if (!f) {
+        LOG("Failed to save config file");
+        showStatus("ERROR: Failed to save config file!");
+        return;
+    }
+
+    // Write keybind config header
+    fprintf(f, "# ============================================================\n");
+    fprintf(f, "# KEYBIND CONFIGURATION\n");
+    fprintf(f, "# ============================================================\n");
+    fprintf(f, "# Set your toggle key here. Supported formats:\n");
+    fprintf(f, "# - F-keys: F1, F2, F3, ..., F12\n");
+    fprintf(f, "# - Mouse buttons: MB1 (left), MB2 (right), MB3 (middle), MB4, MB5\n");
+    fprintf(f, "# - VK codes: Any valid Virtual Key code (e.g., 116 for F5)\n");
+    fprintf(f, "# Default: F5 (toggle start/stop with same key)\n");
+    fprintf(f, "toggle-key: %s\n\n", toggleKeyName);
+
+    // Write filter presets header
+    fprintf(f, "# ============================================================\n");
+    fprintf(f, "# FILTER PRESETS\n");
+    fprintf(f, "# ============================================================\n");
+    fprintf(f, "# clumsy will capture packets based on filter criteria\n");
+    fprintf(f, "# each entry must contain single line\n");
+    fprintf(f, "# filter-name:filter-text\n");
+    fprintf(f, "# see <https://github.com/basil00/Divert/wiki/WinDivert-Documentation#7-filter-language> for details\n\n");
+
+    // Write all filter entries
+    for (UINT i = 0; i < filtersSize; i++) {
+        fprintf(f, "%s: %s\n", filters[i].filterName, filters[i].filterValue);
+    }
+
+    fclose(f);
+    LOG("Config saved successfully with keybind: %s", toggleKeyName);
+}
+
+// Callback for Set Keybind button
+static int uiSetKeybindCb(Ihandle* ih) {
+    UNREFERENCED_PARAMETER(ih);
+    const char* newKey = IupGetAttribute(keybindText, "VALUE");
+
+    if (!newKey || !*newKey) {
+        showStatus("ERROR: Keybind cannot be empty!");
+        return IUP_DEFAULT;
+    }
+
+    // Validate and parse the new keybind
+    char oldKeyName[32];
+    short oldKeyCode = toggleKeyCode;
+    short oldIsMouseButton = toggleKeyIsMouseButton;
+    strncpy(oldKeyName, toggleKeyName, sizeof(oldKeyName));
+
+    parseToggleKey(newKey);
+
+    // Check if parsing was successful (if toggleKeyName changed)
+    if (strcmp(oldKeyName, toggleKeyName) != 0 ||
+        oldKeyCode != toggleKeyCode ||
+        oldIsMouseButton != toggleKeyIsMouseButton) {
+        // Successfully changed
+        updateKeybindLabel();
+        saveConfigFile();
+
+        char msg[128];
+        sprintf(msg, "Keybind changed to: %s", toggleKeyName);
+        showStatus(msg);
+        LOG("Keybind changed to: %s (code: %d, isMouse: %d)",
+            toggleKeyName, toggleKeyCode, toggleKeyIsMouseButton);
+    }
+    else {
+        // Invalid keybind, restore old values
+        toggleKeyCode = oldKeyCode;
+        toggleKeyIsMouseButton = oldIsMouseButton;
+        strncpy(toggleKeyName, oldKeyName, sizeof(toggleKeyName));
+
+        char msg[128];
+        sprintf(msg, "ERROR: Invalid keybind format: %s", newKey);
+        showStatus(msg);
+    }
+
+    return IUP_DEFAULT;
+}
+
 // init, startup, cleanup and other functions remain unchanged
 
-void init(int argc, char *argv[]) {
-  UINT ix;
-  Ihandle *topVbox, *bottomVbox, *dialogVBox, *controlHbox;
-  Ihandle *noneIcon, *doingIcon, *errorIcon;
-  char *arg_value = NULL;
+void init(int argc, char* argv[]) {
+    UINT ix;
+    Ihandle* topVbox, * bottomVbox, * dialogVBox, * controlHbox, * keybindHbox;
+    Ihandle* noneIcon, * doingIcon, * errorIcon;
+    char* arg_value = NULL;
 
-  // fill in config
-  loadConfig();
+    // fill in config
+    loadConfig();
 
-  // iup inits
-  IupOpen(&argc, &argv);
+    // iup inits
+    IupOpen(&argc, &argv);
 
-  // Update status label to show keybind info
-  char statusText[512];
-  sprintf(statusText, 
-    "NOTICE: When capturing localhost (loopback) packets, you CAN'T include inbound criteria.\n"
-    "Filters like 'udp' need to be 'udp and outbound' to work. Toggle key: %s",
-    toggleKeyName);
-  statusLabel = IupLabel(statusText);
-  IupSetAttribute(statusLabel, "EXPAND", "HORIZONTAL");
-  IupSetAttribute(statusLabel, "PADDING", "8x");
+    // this is so easy to get wrong so it's pretty worth noting in the program
+    statusLabel = IupLabel("NOTICE: When capturing localhost (loopback) packets, "
+        "you CAN'T include inbound criteria.\n"
+        "Filters like 'udp' need to be 'udp and outbound' to "
+        "work. See readme for more info.");
+    IupSetAttribute(statusLabel, "EXPAND", "HORIZONTAL");
+    IupSetAttribute(statusLabel, "PADDING", "8x8");
 
-  topFrame = IupFrame(
-      topVbox =
-          IupVbox(filterText = IupText(NULL),
-                  controlHbox = IupHbox(stateIcon = IupLabel(NULL),
-                                        filterButton = IupButton("Start", NULL),
-                                        IupFill(), IupLabel("Presets:  "),
-                                        filterSelectList = IupList(NULL), NULL),
-                  NULL));
+    // Create keybind configuration UI
+    keybindLabel = IupLabel("");
+    updateKeybindLabel();
+    IupSetAttribute(keybindLabel, "PADDING", "4x");
 
-  // parse arguments and set globals *before* setting up UI.
-  // arguments can be read and set after callbacks are setup
-  // FIXME as Release is built as WindowedApp, stdout/stderr won't show
-  LOG("argc: %d", argc);
-  if (argc > 1) {
-    if (!parseArgs(argc, argv)) {
-      fprintf(stderr, "invalid argument count. ensure you're using options as "
-                      "\"--drop on\"");
-      exit(-1); // fail fast.
+    keybindText = IupText(NULL);
+    IupSetAttribute(keybindText, "VISIBLECOLUMNS", "10");
+    IupSetAttribute(keybindText, "VALUE", toggleKeyName);
+    IupSetAttribute(keybindText, "CUEBANNER", "F5 or MB4");
+
+    keybindButton = IupButton("Set", NULL);
+    IupSetAttribute(keybindButton, "PADDING", "4x");
+    IupSetCallback(keybindButton, "ACTION", (Icallback)uiSetKeybindCb);
+
+    keybindHbox = IupHbox(
+        keybindLabel,
+        IupLabel("  Change: "),
+        keybindText,
+        keybindButton,
+        NULL
+    );
+    IupSetAttribute(keybindHbox, "ALIGNMENT", "ACENTER");
+    IupSetAttribute(keybindHbox, "GAP", "4");
+
+    topFrame = IupFrame(
+        topVbox =
+        IupVbox(filterText = IupText(NULL),
+            controlHbox = IupHbox(stateIcon = IupLabel(NULL),
+                filterButton = IupButton("Start", NULL),
+                IupFill(), IupLabel("Presets:  "),
+                filterSelectList = IupList(NULL), NULL),
+            keybindHbox,
+            NULL));
+
+    // parse arguments and set globals *before* setting up UI.
+    // arguments can be read and set after callbacks are setup
+    // FIXME as Release is built as WindowedApp, stdout/stderr won't show
+    LOG("argc: %d", argc);
+    if (argc > 1) {
+        if (!parseArgs(argc, argv)) {
+            fprintf(stderr, "invalid argument count. ensure you're using options as "
+                "\"--drop on\"");
+            exit(-1); // fail fast.
+        }
+        parameterized = 1;
     }
-    parameterized = 1;
-  }
 
-  IupSetAttribute(topFrame, "TITLE", "Filtering");
-  IupSetAttribute(topFrame, "EXPAND", "HORIZONTAL");
-  IupSetAttribute(filterText, "EXPAND", "HORIZONTAL");
-  IupSetCallback(filterText, "VALUECHANGED_CB", (Icallback)uiFilterTextCb);
-  IupSetAttribute(filterButton, "PADDING", "8x");
-  IupSetCallback(filterButton, "ACTION", uiStartCb);
-  IupSetAttribute(topVbox, "NCMARGIN", "4x4");
-  IupSetAttribute(topVbox, "NCGAP", "4x2");
-  IupSetAttribute(controlHbox, "ALIGNMENT", "ACENTER");
+    IupSetAttribute(topFrame, "TITLE", "Filtering");
+    IupSetAttribute(topFrame, "EXPAND", "HORIZONTAL");
+    IupSetAttribute(filterText, "EXPAND", "HORIZONTAL");
+    IupSetCallback(filterText, "VALUECHANGED_CB", (Icallback)uiFilterTextCb);
+    IupSetAttribute(filterButton, "PADDING", "8x");
+    IupSetCallback(filterButton, "ACTION", uiStartCb);
+    IupSetAttribute(topVbox, "NCMARGIN", "4x4");
+    IupSetAttribute(topVbox, "NCGAP", "4x2");
+    IupSetAttribute(controlHbox, "ALIGNMENT", "ACENTER");
 
-  // setup state icon
-  IupSetAttribute(stateIcon, "IMAGE", "none_icon");
-  IupSetAttribute(stateIcon, "PADDING", "4x");
+    // setup state icon
+    IupSetAttribute(stateIcon, "IMAGE", "none_icon");
+    IupSetAttribute(stateIcon, "PADDING", "4x");
 
-  // fill in options and setup callback
-  IupSetAttribute(filterSelectList, "VISIBLECOLUMNS", "24");
-  IupSetAttribute(filterSelectList, "DROPDOWN", "YES");
-  for (ix = 0; ix < filtersSize; ++ix) {
-    char ixBuf[4];
-    sprintf(ixBuf, "%d", ix + 1); // ! staring from 1, following lua indexing
-    IupStoreAttribute(filterSelectList, ixBuf, filters[ix].filterName);
-  }
-  IupSetAttribute(filterSelectList, "VALUE", "1");
-  IupSetCallback(filterSelectList, "ACTION", (Icallback)uiListSelectCb);
-  // set filter text value since the callback won't take effect before main loop
-  // starts
-  IupSetAttribute(filterText, "VALUE", filters[0].filterValue);
+    // fill in options and setup callback
+    IupSetAttribute(filterSelectList, "VISIBLECOLUMNS", "24");
+    IupSetAttribute(filterSelectList, "DROPDOWN", "YES");
+    for (ix = 0; ix < filtersSize; ++ix) {
+        char ixBuf[4];
+        sprintf(ixBuf, "%d", ix + 1); // ! staring from 1, following lua indexing
+        IupStoreAttribute(filterSelectList, ixBuf, filters[ix].filterName);
+    }
+    IupSetAttribute(filterSelectList, "VALUE", "1");
+    IupSetCallback(filterSelectList, "ACTION", (Icallback)uiListSelectCb);
+    // set filter text value since the callback won't take effect before main loop
+    // starts
+    IupSetAttribute(filterText, "VALUE", filters[0].filterValue);
 
-  // functionalities frame
-  bottomFrame = IupFrame(bottomVbox = IupVbox(NULL));
-  IupSetAttribute(bottomFrame, "TITLE", "Functions");
-  IupSetAttribute(bottomVbox, "NCMARGIN", "4x4");
-  IupSetAttribute(bottomVbox, "NCGAP", "4x2");
+    // functionalities frame
+    bottomFrame = IupFrame(bottomVbox = IupVbox(NULL));
+    IupSetAttribute(bottomFrame, "TITLE", "Functions");
+    IupSetAttribute(bottomVbox, "NCMARGIN", "4x4");
+    IupSetAttribute(bottomVbox, "NCGAP", "4x2");
 
-  // create icons
-  noneIcon = IupImage(8, 8, icon8x8);
-  doingIcon = IupImage(8, 8, icon8x8);
-  errorIcon = IupImage(8, 8, icon8x8);
-  IupSetAttribute(noneIcon, "0", "BGCOLOR");
-  IupSetAttribute(noneIcon, "1", "224 224 224");
-  IupSetAttribute(doingIcon, "0", "BGCOLOR");
-  IupSetAttribute(doingIcon, "1", "0 224 0");
-  IupSetAttribute(errorIcon, "0", "BGCOLOR");
-  IupSetAttribute(errorIcon, "1", "224 0 0");
-  IupSetHandle("none_icon", noneIcon);
-  IupSetHandle("doing_icon", doingIcon);
-  IupSetHandle("error_icon", errorIcon);
+    // create icons
+    noneIcon = IupImage(8, 8, icon8x8);
+    doingIcon = IupImage(8, 8, icon8x8);
+    errorIcon = IupImage(8, 8, icon8x8);
+    IupSetAttribute(noneIcon, "0", "BGCOLOR");
+    IupSetAttribute(noneIcon, "1", "224 224 224");
+    IupSetAttribute(doingIcon, "0", "BGCOLOR");
+    IupSetAttribute(doingIcon, "1", "0 224 0");
+    IupSetAttribute(errorIcon, "0", "BGCOLOR");
+    IupSetAttribute(errorIcon, "1", "224 0 0");
+    IupSetHandle("none_icon", noneIcon);
+    IupSetHandle("doing_icon", doingIcon);
+    IupSetHandle("error_icon", errorIcon);
 
-  // create dialogs and controls
-  for (ix = 0; ix < MODULE_CNT; ++ix) {
-    uiSetupModule(modules[ix], bottomVbox);
-  }
+    // create dialogs and controls
+    for (ix = 0; ix < MODULE_CNT; ++ix) {
+        uiSetupModule(modules[ix], bottomVbox);
+    }
 
-  dialogVBox = IupVbox(topFrame, bottomFrame, statusLabel, NULL);
-  IupSetAttribute(dialogVBox, "NMARGIN", "4x4");
-  IupSetAttribute(dialogVBox, "NGAP", "2");
+    dialogVBox = IupVbox(topFrame, bottomFrame, statusLabel, NULL);
+    IupSetAttribute(dialogVBox, "NMARGIN", "4x4");
+    IupSetAttribute(dialogVBox, "NGAP", "2");
 
-  dialog = IupDialog(dialogVBox);
-  IupSetAttribute(dialog, "TITLE", "clumsy " CLUMSY_VERSION);
-  IupSetAttribute(dialog, "SHRINK", "YES");
-  IupSetCallback(dialog, "SHOW_CB", (Icallback)uiOnDialogShow);
-  IupSetCallback(dialog, "K_ANY", (Icallback)KEYPRESS_CB);
+    dialog = IupDialog(dialogVBox);
+    IupSetAttribute(dialog, "TITLE", "clumsy " CLUMSY_VERSION);
+    IupSetAttribute(dialog, "SHRINK", "YES");
+    IupSetCallback(dialog, "SHOW_CB", (Icallback)uiOnDialogShow);
+    IupSetCallback(dialog, "K_ANY", (Icallback)KEYPRESS_CB);
 
-  timer = IupTimer();
-  IupSetAttribute(timer, "TIME", "200");
-  IupSetCallback(timer, "ACTION_CB", (Icallback)uiTimerCb);
+    timer = IupTimer();
+    IupSetAttribute(timer, "TIME", "200");
+    IupSetCallback(timer, "ACTION_CB", (Icallback)uiTimerCb);
 
-  // timeout timer (for parameterized mode)
-  arg_value = IupGetGlobal("timeout");
-  if (arg_value) {
-    short timeout_ms = (short)atoi(arg_value);
-    LOG("set timeout to %d ms", timeout_ms);
-    timeout = IupTimer();
-    char buf[8];
-    sprintf(buf, "%d", timeout_ms);
-    IupSetAttribute(timeout, "TIME", buf);
-    IupSetCallback(timeout, "ACTION_CB", (Icallback)uiTimeoutCb);
-    IupSetAttribute(timeout, "RUN", "YES");
-  }
+    // timeout timer (for parameterized mode)
+    arg_value = IupGetGlobal("timeout");
+    if (arg_value) {
+        short timeout_ms = (short)atoi(arg_value);
+        LOG("set timeout to %d ms", timeout_ms);
+        timeout = IupTimer();
+        char buf[8];
+        sprintf(buf, "%d", timeout_ms);
+        IupSetAttribute(timeout, "TIME", buf);
+        IupSetCallback(timeout, "ACTION_CB", (Icallback)uiTimeoutCb);
+        IupSetAttribute(timeout, "RUN", "YES");
+    }
 }
 
 void startup() {
