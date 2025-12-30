@@ -484,7 +484,84 @@ static int uiPressToBind(Ihandle* ih) {
     return IUP_DEFAULT;
 }
 
-// init, startup, cleanup and other functions remain unchanged
+// Apply hardcoded preset on startup
+static void applyDefaultPreset() {
+    LOG("Applying default preset...");
+    
+    // Get Drop module handles
+    Ihandle* dropToggle = IupGetHandle("MODULE_TOGGLE_drop");
+    Ihandle* dropControls = IupGetHandle("MODULE_CONTROLS_drop");
+    
+    if (dropToggle && dropControls) {
+        // Enable drop module
+        IupSetAttribute(dropToggle, "VALUE", "ON");
+        IupSetAttribute(dropControls, "ACTIVE", "YES");
+        
+        // Find children controls and set values
+        Ihandle* child = IupGetChild(dropControls, 0);
+        int childIndex = 0;
+        while (child) {
+            char* type = IupGetClassName(child);
+            
+            // Find Inbound checkbox (first toggle)
+            if (strcmp(type, "toggle") == 0 && childIndex == 0) {
+                IupSetAttribute(child, "VALUE", "ON");
+                LOG("Set Drop Inbound to ON");
+            }
+            // Find Outbound checkbox (second toggle)
+            else if (strcmp(type, "toggle") == 0 && childIndex == 1) {
+                IupSetAttribute(child, "VALUE", "OFF");
+                LOG("Set Drop Outbound to OFF");
+            }
+            // Find Chance text field
+            else if (strcmp(type, "text") == 0) {
+                IupSetAttribute(child, "VALUE", "100.0");
+                LOG("Set Drop Chance to 100%%");
+            }
+            
+            if (strcmp(type, "toggle") == 0) childIndex++;
+            child = IupGetBrother(child);
+        }
+    }
+    
+    // Get Bandwidth module handles
+    Ihandle* bwToggle = IupGetHandle("MODULE_TOGGLE_bandwidth");
+    Ihandle* bwControls = IupGetHandle("MODULE_CONTROLS_bandwidth");
+    
+    if (bwToggle && bwControls) {
+        // Enable bandwidth module
+        IupSetAttribute(bwToggle, "VALUE", "ON");
+        IupSetAttribute(bwControls, "ACTIVE", "YES");
+        
+        // Find children controls and set values
+        Ihandle* child = IupGetChild(bwControls, 0);
+        int childIndex = 0;
+        while (child) {
+            char* type = IupGetClassName(child);
+            
+            // Find Inbound checkbox (first toggle)
+            if (strcmp(type, "toggle") == 0 && childIndex == 0) {
+                IupSetAttribute(child, "VALUE", "ON");
+                LOG("Set Bandwidth Inbound to ON");
+            }
+            // Find Outbound checkbox (second toggle)
+            else if (strcmp(type, "toggle") == 0 && childIndex == 1) {
+                IupSetAttribute(child, "VALUE", "OFF");
+                LOG("Set Bandwidth Outbound to OFF");
+            }
+            // Find Limit text field
+            else if (strcmp(type, "text") == 0) {
+                IupSetAttribute(child, "VALUE", "1");
+                LOG("Set Bandwidth Limit to 1 KB/s");
+            }
+            
+            if (strcmp(type, "toggle") == 0) childIndex++;
+            child = IupGetBrother(child);
+        }
+    }
+    
+    LOG("Default preset applied successfully");
+}
 
 void init(int argc, char* argv[]) {
     UINT ix;
@@ -609,6 +686,14 @@ void init(int argc, char* argv[]) {
     // create dialogs and controls
     for (ix = 0; ix < MODULE_CNT; ++ix) {
         uiSetupModule(modules[ix], bottomVbox);
+    }
+
+    applyDefaultPreset();
+
+    for (ix = 0; ix < MODULE_CNT; ++ix) {
+        if (strcmp(modules[ix]->shortName, "drop") == 0) {
+            break;
+        }
     }
 
     dialogVBox = IupVbox(topFrame, bottomFrame, statusLabel, NULL);
@@ -899,6 +984,14 @@ static void uiSetupModule(Module *module, Ihandle *parent) {
   IupSetAttribute(icon, "IMAGE", "none_icon");
   IupSetAttribute(icon, "PADDING", "4x");
   module->iconHandle = icon;
+
+  char handleName[64];
+  sprintf(handleName, "MODULE_TOGGLE_%s", module->shortName);
+  IupSetHandle(handleName, toggle);
+
+  sprintf(handleName, "MODULE_CONTROLS_%s", module->shortName);
+  IupSetHandle(handleName, controls);
+
 
   // parameterize toggle
   if (parameterized) {
